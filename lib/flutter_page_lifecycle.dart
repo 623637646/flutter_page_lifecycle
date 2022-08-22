@@ -36,8 +36,11 @@ class _RenderPageLifecycle extends RenderProxyBox {
 
   @override
   void paint(PaintingContext context, Offset offset) {
-    super.paint(context, offset);
+    context.pushLayer(
+        _PageLifecycleLayer(update: _update), super.paint, offset);
+  }
 
+  void _update() {
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 100), () {
       // Ensure that work is done between frames so that calculations are
@@ -53,5 +56,29 @@ class _RenderPageLifecycle extends RenderProxyBox {
         }
       }, Priority.touch);
     });
+  }
+}
+
+class _PageLifecycleLayer extends ContainerLayer {
+  final VoidCallback update;
+
+  _PageLifecycleLayer({required this.update});
+
+  @override
+  void addToScene(dynamic builder, [Offset layerOffset = Offset.zero]) {
+    super.addToScene(builder);
+    update();
+  }
+
+  @override
+  void attach(Object owner) {
+    super.attach(owner);
+    update();
+  }
+
+  @override
+  void detach() {
+    super.detach();
+    update();
   }
 }
