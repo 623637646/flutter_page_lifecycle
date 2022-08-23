@@ -1,84 +1,113 @@
 library flutter_page_lifecycle;
 
-import 'dart:async';
-import 'package:flutter/rendering.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
+import 'package:visibility_detector/visibility_detector.dart';
 
-typedef PageLifecycleStateChangedCallback = void Function(bool appear);
+typedef PageLifecycleStateChangedCallback = void Function(bool appeared);
 
-class PageLifecycle extends SingleChildRenderObjectWidget {
-  final PageLifecycleStateChangedCallback stateChanged;
-
-  const PageLifecycle({super.key, required this.stateChanged, super.child});
-
-  @override
-  RenderObject createRenderObject(BuildContext context) {
-    return _RenderPageLifecycle(
-        route: ModalRoute.of(context), stateChanged: stateChanged);
-  }
-
-  @override
-  void updateRenderObject(
-      BuildContext context, covariant RenderObject renderObject) {
-    super.updateRenderObject(context, renderObject);
-    (renderObject as _RenderPageLifecycle).route = ModalRoute.of(context);
-  }
+enum PageLifecycleDisappearCondition {
+  appInactive,
+  appPaused,
 }
 
-class _RenderPageLifecycle extends RenderProxyBox {
-  final PageLifecycleStateChangedCallback stateChanged;
-  ModalRoute? route;
-  Timer? _debounce;
-  bool _lastIsCurrent = false;
+class PageLifecycleConfig {
+  /// The detection interval.
+  /// Smaller detectionInterval means more accuracy and higher CPU consumption.
+  static Duration get detectionInterval =>
+      VisibilityDetectorController.instance.updateInterval;
+  static set detectionInterval(Duration value) =>
+      VisibilityDetectorController.instance.updateInterval = value;
 
-  _RenderPageLifecycle({this.route, required this.stateChanged});
+  /// The default additional condition which will mark the page disappear.
+  static final Set<PageLifecycleDisappearCondition> disappearWhen = {
+    PageLifecycleDisappearCondition.appInactive,
+    PageLifecycleDisappearCondition.appPaused,
+  };
+}
+
+class PageLifecycle extends StatefulWidget {
+  // page lifecycle call back
+  final PageLifecycleStateChangedCallback stateChanged;
+
+  /// Child widget.
+  final Widget? child;
+
+  /// The additional condition which will mark the page disappear for current widget.
+  /// If it's null, will use [PageLifecycleConfig.disappearWhen]
+  final Set<PageLifecycleDisappearCondition>? disappearWhen;
+
+  const PageLifecycle(
+      {super.key, required this.stateChanged, this.disappearWhen, this.child});
 
   @override
-  void paint(PaintingContext context, Offset offset) {
-    context.pushLayer(
-        _PageLifecycleLayer(update: _update), super.paint, offset);
+  State<PageLifecycle> createState() => _PageLifecycleState();
+}
+
+class _PageLifecycleState extends State<PageLifecycle>
+    with WidgetsBindingObserver {
+  final _key = UniqueKey();
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
   }
 
-  void _update() {
-    _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 100), () {
-      // Ensure that work is done between frames so that calculations are
-      // performed from a consistent state.  We use `scheduleTask<T>` here instead
-      // of `addPostFrameCallback` or `scheduleFrameCallback` so that work will
-      // be done even if a new frame isn't scheduled and without unnecessarily
-      // scheduling a new frame.
-      SchedulerBinding.instance.scheduleTask<void>(() {
-        final newValue = route?.isCurrent ?? false;
-        if (_lastIsCurrent != newValue) {
-          stateChanged(newValue);
-          _lastIsCurrent = newValue;
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    switch (state) {
+      case AppLifecycleState.detached:
+        break;
+      case AppLifecycleState.inactive:
+        if (_markDisappearWhen(PageLifecycleDisappearCondition.appInactive)) {
+          _updateAppearanceStateIfNeeded(false);
         }
-      }, Priority.touch);
-    });
-  }
-}
-
-class _PageLifecycleLayer extends ContainerLayer {
-  final VoidCallback update;
-
-  _PageLifecycleLayer({required this.update});
-
-  @override
-  void addToScene(dynamic builder, [Offset layerOffset = Offset.zero]) {
-    super.addToScene(builder);
-    update();
+        break;
+      case AppLifecycleState.paused:
+        if (_markDisappearWhen(PageLifecycleDisappearCondition.appPaused)) {
+          _updateAppearanceStateIfNeeded(false);
+        }
+        break;
+      case AppLifecycleState.resumed:
+        final newValue = _visibleFraction != 0;
+        _updateAppearanceStateIfNeeded(newValue);
+        break;
+    }
   }
 
-  @override
-  void attach(Object owner) {
-    super.attach(owner);
-    update();
-  }
+  bool _appeared = false;
+  double _visibleFraction = 0;
 
   @override
-  void detach() {
-    super.detach();
-    update();
+  Widget build(BuildContext context) {
+    return VisibilityDetector(
+      key: _key,
+      onVisibilityChanged: (visibilityInfo) {
+        _visibleFraction = visibilityInfo.visibleFraction;
+        final newValue = _visibleFraction != 0;
+        _updateAppearanceStateIfNeeded(newValue);
+      },
+      child: widget.child ?? Container(),
+    );
+  }
+
+  void _updateAppearanceStateIfNeeded(bool newValue) {
+    if (_appeared == newValue) {
+      return;
+    }
+    _appeared = newValue;
+    widget.stateChanged(_appeared);
+  }
+
+  bool _markDisappearWhen(PageLifecycleDisappearCondition condition) {
+    final situations =
+        widget.disappearWhen ?? PageLifecycleConfig.disappearWhen;
+    return situations.contains(condition);
   }
 }
